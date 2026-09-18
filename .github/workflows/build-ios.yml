@@ -1,0 +1,62 @@
+name: Build iPhone IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Download source
+        uses: actions/checkout@v4
+
+      - name: Build unsigned iPhone app
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+          xcodebuild \
+            -project Shiguang.xcodeproj \
+            -scheme Shiguang \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
+            build 2>&1 | tee build-ios.log
+
+          APP_PATH="$PWD/build/Build/Products/Release-iphoneos/Shiguang.app"
+          test -f "$APP_PATH/Shiguang"
+
+          mkdir -p Payload dist
+          cp -R "$APP_PATH" Payload/Shiguang.app
+          zip -qry dist/Shiguang-unsigned.ipa Payload
+          unzip -tq dist/Shiguang-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shiguang-iPhone-unsigned
+          path: dist/Shiguang-unsigned.ipa
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build-ios.log
+          if-no-files-found: warn
+          retention-days: 7
