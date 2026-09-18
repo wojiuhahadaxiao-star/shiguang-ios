@@ -1,6 +1,6 @@
 import UIKit
 import Photos
-
+import PhotosUI
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
