@@ -409,7 +409,7 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate {
         let bar = UIStackView(); bar.axis = .vertical; bar.spacing = 8; bar.alignment = .fill; bar.translatesAutoresizingMaskIntoConstraints = false
         caption.textAlignment = .center; caption.textColor = view.tintColor; bar.addArrangedSubview(caption)
         let controls = UIStackView(); controls.distribution = .fillEqually
-        for (title, selector) in [("上一张",#selector(previous)),("返回",#selector(close)),("下一张",#selector(next))] {
+        for (title, selector) in [("上一张",#selector(showPreviousPhoto())),("返回",#selector(closeViewer())),("下一张",#selector(showNextPhoto()))] {
             let button = UIButton(type:.system); button.setTitle(title,for:.normal); button.addTarget(self,action:selector,for:.touchUpInside); controls.addArrangedSubview(button)
         }
         controls.heightAnchor.constraint(equalToConstant:48).isActive = true; bar.addArrangedSubview(controls)
@@ -434,8 +434,8 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate {
     }
     private func updateMark(){ guard items.indices.contains(index) else { return }; markButton.setTitle(isMarked?(items[index].localIdentifier) == true ? "取消删除标记，保留照片" : "已保留 · 重新标记删除",for:.normal) }
     @objc private func toggle(){ guard items.indices.contains(index) else { return }; toggleMark?(items[index].localIdentifier); updateMark() }
-    @objc private func previous(){ if index>0 { index-=1;load() } }
-    @objc private func next(){ if index+1<items.count { index+=1;load() } }
-    @objc private func close(){ dismiss(animated:true) }
+    @objc private func showPreviousPhoto(){ if index>0 { index-=1;load() } }
+    @objc private func showNextPhoto(){ if index+1<items.count { index+=1;load() } }
+    @objc private func closeViewer(){ dismiss(animated:true) }
     override func viewWillDisappear(_ animated:Bool){ super.viewWillDisappear(animated); token=UUID();live.stopPlayback();for request in requests { PHImageManager.default().cancelImageRequest(request) } }
 }
