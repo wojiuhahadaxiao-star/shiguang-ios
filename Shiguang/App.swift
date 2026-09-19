@@ -44,7 +44,7 @@ final class PhotoAccessController: UIViewController, PHPickerViewControllerDeleg
         view.backgroundColor = UIColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1)
         view.tintColor = blue
         let title = UILabel()
-        title.text = "拾光 · P5"
+        title.text = "拾光 · P6"
         title.font = .systemFont(ofSize: 28, weight: .semibold)
         title.textColor = blue
         title.textAlignment = .center
@@ -151,7 +151,7 @@ final class PhotoAccessController: UIViewController, PHPickerViewControllerDeleg
     }
     private func showReport() {
         let purpose = Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryUsageDescription") as? String ?? "缺失"
-        let text = "版本：1.8.0 P5\n系统：\(UIDevice.current.systemVersion)\n包名：\(Bundle.main.bundleIdentifier ?? "未知")\n照片权限：\(PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue)\n活动场景：\(view.window?.windowScene?.activationState == .foregroundActive)\n请求等待：\(inFlight)，超时：\(timedOut)\n用途声明：\(purpose)"
+        let text = "版本：1.8.1 P6\n系统：\(UIDevice.current.systemVersion)\n包名：\(Bundle.main.bundleIdentifier ?? "未知")\n照片权限：\(PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue)\n活动场景：\(view.window?.windowScene?.activationState == .foregroundActive)\n请求等待：\(inFlight)，超时：\(timedOut)\n用途声明：\(purpose)"
         let alert = UIAlertController(title: "授权诊断", message: text, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "复制", style: .default) { _ in UIPasteboard.general.string = text })
         alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
@@ -284,7 +284,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private var assets: [String: PHAsset] = [:]
     private var dayIDs: [String] = []
     private var dayAnchor: String?
-    private var rows = 2
+    private let rows = 3
     private var chrome = false
     private var locked = false
     private let accessButton = UIButton(type: .system)
@@ -474,7 +474,8 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         live.stopPlayback(); live.livePhoto = nil; PHImageManager.default().cancelImageRequest(liveRequest)
         updateChrome(); zoom.setZoomScale(1, animated: false); photo.transform = .identity; photo.alpha = 1
         PHImageManager.default().cancelImageRequest(request); imageToken = UUID(); let token = imageToken
-        photo.image = nil
+        // Keep the previous frame until Photos returns the next image. Clearing it here
+        // caused a visible black flash after every keep/delete/navigation gesture.
         guard let id = state.current, let asset = assets[id] else { message.text = "暂无可浏览照片\n轻点授权，或在菜单调整可访问的照片"; chrome = true; updateChrome(); return }
         message.text = ""
         if autoLive && asset.mediaSubtypes.contains(.photoLive) {
@@ -548,12 +549,10 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
             if discard || next {
                 locked = true
                 if discard {
-                    let target = trash.center
-                    let tx = target.x - photo.center.x, ty = target.y - photo.center.y
-                    UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseIn], animations: {
-                        self.photo.transform = CGAffineTransform(translationX: tx, y: ty).scaledBy(x: 0.08, y: 0.08)
-                        self.photo.alpha = 0.08
-                        self.trash.transform = CGAffineTransform(scaleX: 1.22, y: 1.22)
+                    UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut], animations: {
+                        self.photo.transform = CGAffineTransform(translationX: 0, y: -self.view.bounds.height * 0.72).scaledBy(x: 0.92, y: 0.92)
+                        self.photo.alpha = 0
+                        self.trash.transform = CGAffineTransform(scaleX: 1.16, y: 1.16)
                     }) { _ in
                         self.trash.transform = .identity; self.locked = false; self.advance(discard: true, backwards: false)
                     }
@@ -589,7 +588,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         }
         dayIDs = assets.values.filter { $0.creationDate.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false }.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }.map(\.localIdentifier)
         live.stopPlayback(); live.livePhoto = nil
-        dayAnchor = id; selectedDayID = id; state.visited.insert(id); save(); rows = 2
+        dayAnchor = id; selectedDayID = id; state.visited.insert(id); save()
         live.stopPlayback(); live.livePhoto = nil; zoom.isHidden = true; view.backgroundColor = .black; grid.backgroundColor = .black
         grid.reloadData(); flow.invalidateLayout(); grid.layoutIfNeeded()
         grid.isHidden = false; grid.alpha = 0
@@ -616,22 +615,39 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
             cell.contentView.transform = CGAffineTransform(scaleX: scale, y: scale)
         }
         if pinch.state == .ended || pinch.state == .cancelled {
-            if pinch.scale < 0.85 { rows = 3 }
-            else if pinch.scale > 1.18, let id = dayPinchID, let asset = assets[id] {
+            if pinch.scale > 1.18, let id = dayPinchID, assets[id] != nil {
                 if let path = dayIDs.firstIndex(of: id).map({ IndexPath(item: $0, section: 0) }), let cell = grid.cellForItem(at: path) as? PhotoCell {
                     UIView.animate(withDuration: 0.13, animations: { cell.contentView.transform = CGAffineTransform(scaleX: 1.06, y: 1.06); cell.contentView.alpha = 0.72 }) { _ in
                         cell.contentView.transform = .identity; cell.contentView.alpha = 1
-                        let viewer = PhotoViewer(assets: [asset], autoLive: self.autoLive, dayZoom: true)
+                        let dayAssets = self.dayIDs.compactMap { self.assets[$0] }
+                        let start = dayAssets.firstIndex { $0.localIdentifier == id } ?? 0
+                        let viewer = PhotoViewer(assets: dayAssets, autoLive: self.autoLive, dayZoom: true, initialIndex: start)
+                        self.connectDayViewer(viewer)
                         viewer.modalTransitionStyle = .crossDissolve
                         self.present(viewer, animated: true)
                     }
-                } else { present(PhotoViewer(assets: [asset], autoLive: autoLive, dayZoom: true), animated: true) }
+                } else {
+                    let dayAssets = dayIDs.compactMap { assets[$0] }
+                    let start = dayAssets.firstIndex { $0.localIdentifier == id } ?? 0
+                    let viewer = PhotoViewer(assets: dayAssets, autoLive: autoLive, dayZoom: true, initialIndex: start)
+                    connectDayViewer(viewer); present(viewer, animated: true)
+                }
                 return
             }
             if let id = dayPinchID, let path = dayIDs.firstIndex(of: id).map({ IndexPath(item: $0, section: 0) }), let cell = grid.cellForItem(at: path) as? PhotoCell { UIView.animate(withDuration: 0.16) { cell.contentView.transform = .identity; cell.contentView.alpha = 1 } }
-            let anchor = grid.indexPathsForVisibleItems.sorted().first
-            grid.performBatchUpdates({ self.flow.invalidateLayout() }) { _ in if let anchor = anchor { self.grid.scrollToItem(at: anchor, at: .left, animated: true) } }
         }
+    }
+    private func connectDayViewer(_ viewer: PhotoViewer) {
+        viewer.isMarked = { [weak self] id in self?.state.pending.contains(id) == true }
+        viewer.toggleMark = { [weak self] id in
+            guard let self else { return }
+            if self.state.pending.contains(id) { self.state.pending.remove(id) } else { self.mark(id) }
+            self.save(); self.updateChrome()
+            if let item = self.dayIDs.firstIndex(of: id), let cell = self.grid.cellForItem(at: IndexPath(item: item, section: 0)) as? PhotoCell {
+                cell.mark.isHidden = !self.state.pending.contains(id)
+            }
+        }
+        viewer.returnToRandom = { [weak self, weak viewer] in viewer?.dismiss(animated: false) { self?.leaveDay() } }
     }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { dayIDs.count }
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
@@ -673,11 +689,9 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
             draggedCell = nil; draggedID = nil; deleteHint.alpha = 0; deleteHint.isHidden = true
             if commit, let id = id, let cell = cell {
                 locked = true
-                let target = grid.convert(trash.center, from: view)
-                let tx = target.x - cell.center.x, ty = target.y - cell.center.y
-                UIView.animate(withDuration: 0.2, delay: 0, options: [.curveEaseIn], animations: {
-                    cell.contentView.transform = CGAffineTransform(translationX: tx, y: ty).scaledBy(x: 0.08, y: 0.08)
-                    cell.contentView.alpha = 0.08; self.trash.transform = CGAffineTransform(scaleX: 1.22, y: 1.22)
+                UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut], animations: {
+                    cell.contentView.transform = CGAffineTransform(translationX: 0, y: -self.grid.bounds.height * 0.72).scaledBy(x: 0.92, y: 0.92)
+                    cell.contentView.alpha = 0; self.trash.transform = CGAffineTransform(scaleX: 1.16, y: 1.16)
                 }) { _ in
                     self.mark(id); self.locked = false; self.trash.transform = .identity
                     cell.contentView.transform = .identity; cell.contentView.alpha = 1
@@ -731,7 +745,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         save(); if dayAnchor == nil { showPhoto() } else { dayIDs.removeAll { removed.contains($0) }; grid.reloadData(); updateChrome() }
     }
     @objc private func showMenu() {
-        let alert = UIAlertController(title: "拾光 · iOS 1.8.0 · P5", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "拾光 · iOS 1.8.1 · P6", message: nil, preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: dayAnchor == nil ? "回到那天" : "回到单张", style: .default) { _ in if self.dayAnchor == nil { self.enterDay() } else { self.leaveDay() } })
         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { alert.addAction(UIAlertAction(title: "调整可访问照片", style: .default) { _ in PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: self) }) }
         alert.addAction(UIAlertAction(title: "动态照片：" + (autoLive ? "自动播放" : "不播放"), style: .default) { _ in
@@ -751,16 +765,20 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate, UIGestureRecogn
     private let dayZoom: Bool
     var isMarked: ((String) -> Bool)?
     var toggleMark: ((String) -> Void)?
+    var returnToRandom: (() -> Void)?
     private var index = 0
     private let scroll = UIScrollView(), image = UIImageView(), live = PHLivePhotoView()
     private let caption = UILabel(), markButton = UIButton(type: .system)
+    private let dayMenu = UIButton(type: .system), dayUndo = UIButton(type: .system), dayTrash = UIButton(type: .system), dayHint = UILabel()
+    private var dayChrome = false
     private var token = UUID()
     private var requests: [PHImageRequestID] = []
     private lazy var backEdge: UIScreenEdgePanGestureRecognizer = {
         let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(edgeBack(_:)))
         gesture.edges = .left; gesture.delegate = self; return gesture
     }()
-    init(assets: [PHAsset], autoLive: Bool, dayZoom: Bool = false) { self.items = assets; self.autoLive = autoLive; self.dayZoom = dayZoom; super.init(nibName:nil,bundle:nil); modalPresentationStyle = .fullScreen }
+    private lazy var dayPan: UIPanGestureRecognizer = { let value = UIPanGestureRecognizer(target: self, action: #selector(handleDayPan(_:))); value.delegate = self; return value }()
+    init(assets: [PHAsset], autoLive: Bool, dayZoom: Bool = false, initialIndex: Int = 0) { self.items = assets; self.autoLive = autoLive; self.dayZoom = dayZoom; self.index = max(0, min(initialIndex, max(0, assets.count - 1))); super.init(nibName:nil,bundle:nil); modalPresentationStyle = .fullScreen }
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
     override var prefersStatusBarHidden: Bool { dayZoom }
     override func viewDidLoad() {
@@ -771,6 +789,14 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate, UIGestureRecogn
         if dayZoom {
             view.addGestureRecognizer(backEdge)
             scroll.panGestureRecognizer.require(toFail: backEdge)
+            scroll.addGestureRecognizer(dayPan); scroll.panGestureRecognizer.require(toFail: dayPan)
+            let tap = UITapGestureRecognizer(target: self, action: #selector(toggleDayChrome)); tap.require(toFail: dayPan); scroll.addGestureRecognizer(tap)
+            configureDayButton(dayMenu, symbol: "ellipsis", action: #selector(showDayMenu))
+            configureDayButton(dayUndo, symbol: "arrow.uturn.backward", action: #selector(undoDayMark))
+            configureDayButton(dayTrash, symbol: "trash", action: #selector(toggleDayMark))
+            dayTrash.backgroundColor = view.tintColor; dayTrash.tintColor = .black
+            dayHint.text = "↑ 上滑到垃圾桶"; dayHint.textColor = view.tintColor; dayHint.textAlignment = .center; dayHint.font = .systemFont(ofSize:15,weight:.semibold); dayHint.alpha = 0
+            for item in [dayMenu,dayUndo,dayTrash,dayHint] { item.isHidden = true; view.addSubview(item) }
         } else {
             let bar = UIStackView(); bar.axis = .vertical; bar.spacing = 8; bar.alignment = .fill; bar.translatesAutoresizingMaskIntoConstraints = false
             caption.textAlignment = .center; caption.textColor = view.tintColor; bar.addArrangedSubview(caption)
@@ -800,6 +826,13 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate, UIGestureRecogn
         let topReserve: CGFloat = dayZoom ? 0 : view.safeAreaInsets.top
         let frame = CGRect(x:0,y:topReserve,width:view.bounds.width,height:max(1,view.bounds.height-topReserve-(dayZoom ? 0 : view.safeAreaInsets.bottom)-bottomReserve))
         if scroll.frame != frame { scroll.setZoomScale(1,animated:false); scroll.frame=frame; image.frame=scroll.bounds; live.frame=image.bounds; scroll.contentSize=image.bounds.size }
+        if dayZoom {
+            let safe=view.safeAreaInsets
+            dayMenu.frame=CGRect(x:view.bounds.width-safe.right-68,y:safe.top+10,width:50,height:50)
+            dayUndo.frame=CGRect(x:safe.left+22,y:view.bounds.height-safe.bottom-76,width:58,height:58)
+            dayTrash.frame=CGRect(x:view.bounds.width-safe.right-80,y:dayUndo.frame.minY,width:58,height:58)
+            dayHint.frame=CGRect(x:max(12,dayTrash.frame.midX-95),y:dayTrash.frame.minY-38,width:190,height:28)
+        }
     }
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { image }
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
@@ -808,7 +841,32 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate, UIGestureRecogn
     }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === backEdge { return dayZoom && scroll.zoomScale <= 1.02 }
+        if gestureRecognizer === dayPan {
+            guard dayZoom && scroll.zoomScale <= 1.02 else { return false }
+            let velocity=dayPan.velocity(in:view)
+            return abs(velocity.x)>abs(velocity.y)*1.1 || velocity.y < -abs(velocity.x)*0.8
+        }
         return true
+    }
+    private func configureDayButton(_ button:UIButton,symbol:String,action:Selector){ button.setImage(UIImage(systemName:symbol),for:.normal);button.tintColor=view.tintColor;button.backgroundColor=UIColor(white:0.1,alpha:0.9);button.layer.cornerRadius=29;button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize:24,weight:.medium),forImageIn:.normal);button.addTarget(self,action:action,for:.touchUpInside) }
+    @objc private func toggleDayChrome(){ dayChrome.toggle();[dayMenu,dayUndo,dayTrash].forEach{$0.isHidden = !dayChrome};dayUndo.isEnabled=items.indices.contains(index) && isMarked?(items[index].localIdentifier)==true;dayUndo.alpha=dayUndo.isEnabled ? 1:0.4 }
+    @objc private func showDayMenu(){ let sheet=UIAlertController(title:"拾光",message:nil,preferredStyle:.actionSheet);sheet.addAction(UIAlertAction(title:"回到当天照片",style:.default){[weak self] _ in self?.dismissDayZoom()});sheet.addAction(UIAlertAction(title:"回到随机浏览",style:.default){[weak self] _ in self?.returnToRandom?()});sheet.addAction(UIAlertAction(title:"取消",style:.cancel));sheet.popoverPresentationController?.sourceView=dayMenu;sheet.popoverPresentationController?.sourceRect=dayMenu.bounds;present(sheet,animated:true) }
+    @objc private func toggleDayMark(){ markCurrentAndAdvance() }
+    @objc private func undoDayMark(){ guard items.indices.contains(index),isMarked?(items[index].localIdentifier)==true else{return};toggleMark?(items[index].localIdentifier);toggleDayChrome();toggleDayChrome() }
+    private func markCurrentAndAdvance(){ guard items.indices.contains(index) else{return};let id=items[index].localIdentifier;if isMarked?(id) != true { toggleMark?(id) };UIImpactFeedbackGenerator(style:.light).impactOccurred();if index+1<items.count{index+=1;load()}else{dismissDayZoom()} }
+    @objc private func handleDayPan(_ pan:UIPanGestureRecognizer){
+        let t=pan.translation(in:view),v=pan.velocity(in:view),vertical=abs(t.y)>abs(t.x)
+        if pan.state == .changed {
+            if vertical && t.y<0 { let p=min(1,-t.y/150);image.transform=CGAffineTransform(translationX:t.x*0.08,y:t.y*0.72).scaledBy(x:1-p*0.08,y:1-p*0.08);image.alpha=max(0.42,1-p*0.38);dayHint.isHidden=false;dayHint.alpha=p;dayTrash.isHidden=false;dayTrash.transform=CGAffineTransform(scaleX:1+p*0.16,y:1+p*0.16) }
+            else { image.transform=CGAffineTransform(translationX:t.x,y:0);image.alpha=1;dayHint.alpha=0 }
+        } else if pan.state == .ended || pan.state == .cancelled {
+            let remove=pan.state == .ended && vertical && t.y < -60
+            let change=pan.state == .ended && !vertical && (abs(t.x)>65 || (abs(t.x)>20 && abs(v.x)>650))
+            dayHint.alpha=0;dayHint.isHidden=true
+            if remove { UIView.animate(withDuration:0.20,delay:0,options:[.curveEaseOut],animations:{self.image.transform=CGAffineTransform(translationX:0,y:-self.view.bounds.height*0.72).scaledBy(x:0.92,y:0.92);self.image.alpha=0;self.dayTrash.transform=CGAffineTransform(scaleX:1.16,y:1.16)}){_ in self.image.transform = .identity;self.image.alpha=1;self.dayTrash.transform = .identity;self.dayTrash.isHidden = !self.dayChrome;self.markCurrentAndAdvance()} }
+            else if change { let next=t.x<0;UIView.animate(withDuration:0.18,animations:{self.image.transform=CGAffineTransform(translationX:next ? -self.view.bounds.width:self.view.bounds.width,y:0);self.image.alpha=0}){_ in if next && self.index+1<self.items.count{self.index+=1}else if !next && self.index>0{self.index-=1};self.image.transform = .identity;self.image.alpha=1;self.load()} }
+            else { UIView.animate(withDuration:0.18){self.image.transform = .identity;self.image.alpha=1;self.dayTrash.transform = .identity} }
+        }
     }
     @objc private func edgeBack(_ pan: UIScreenEdgePanGestureRecognizer) {
         guard dayZoom else { return }
@@ -826,10 +884,10 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate, UIGestureRecogn
     private func load() {
         guard items.indices.contains(index) else { return }
         for request in requests { PHImageManager.default().cancelImageRequest(request) }; requests=[]
-        token=UUID(); let currentToken=token; let asset=items[index]; live.stopPlayback(); live.livePhoto=nil; image.image=nil; scroll.setZoomScale(1,animated:false)
+        token=UUID(); let currentToken=token; let asset=items[index]; live.stopPlayback(); live.livePhoto=nil; scroll.setZoomScale(1,animated:false)
         caption.text = dayZoom ? "" : "\(index+1) / \(items.count)"; updateMark()
         let options=PHImageRequestOptions(); options.isNetworkAccessAllowed=true
-        requests.append(PHImageManager.default().requestImage(for:asset,targetSize:CGSize(width:4096,height:4096),contentMode:.aspectFit,options:options) { [weak self] value,_ in DispatchQueue.main.async { guard let self=self,self.token==currentToken else { return }; self.image.image=value } })
+        requests.append(PHImageManager.default().requestImage(for:asset,targetSize:CGSize(width:4096,height:4096),contentMode:.aspectFit,options:options) { [weak self] value,_ in DispatchQueue.main.async { guard let self=self,self.token==currentToken,let value else { return }; UIView.transition(with:self.image,duration:0.12,options:[.transitionCrossDissolve,.allowAnimatedContent]){self.image.image=value} } })
         if autoLive && asset.mediaSubtypes.contains(.photoLive) {
             let options=PHLivePhotoRequestOptions(); options.isNetworkAccessAllowed=true
             requests.append(PHImageManager.default().requestLivePhoto(for:asset,targetSize:CGSize(width:1600,height:1600),contentMode:.aspectFit,options:options) { [weak self] value,_ in DispatchQueue.main.async { guard let self=self,self.token==currentToken else { return }; self.live.livePhoto=value; self.live.startPlayback(with:.full) } })

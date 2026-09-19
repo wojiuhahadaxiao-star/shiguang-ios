@@ -32,8 +32,8 @@ for configID, base, settings in [
     for i,name in enumerate(['Debug','Release']):
         s=dict(settings);s['SWIFT_OPTIMIZATION_LEVEL']='-Onone' if name=='Debug' else '-O'
         if configID == targetConfigs:
-            s['MARKETING_VERSION'] = '1.8.0'
-            s['CURRENT_PROJECT_VERSION'] = '5'
+            s['MARKETING_VERSION'] = '1.8.1'
+            s['CURRENT_PROJECT_VERSION'] = '6'
         if name=='Debug':s['SWIFT_ACTIVE_COMPILATION_CONDITIONS']='DEBUG'
         configs.append(obj(ident(base+i),{'isa':'XCBuildConfiguration','name':name,'buildSettings':s}))
     obj(configID,{'isa':'XCConfigurationList','buildConfigurations':configs,'defaultConfigurationIsVisible':0,'defaultConfigurationName':'Release'})
