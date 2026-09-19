@@ -66,6 +66,9 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private var chrome = false
     private var locked = false
     private var requestingAccess = false
+    private var accessAttempt = UUID()
+    private var accessFeedback: String?
+    private let accessButton = UIButton(type: .system)
     private var observingLibrary = false
     private var querying = false
     private var reloadNeeded = false
@@ -120,8 +123,12 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
         progress.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
         message.font = .systemFont(ofSize: 15); message.numberOfLines = 0; message.textAlignment = .center
-        message.isUserInteractionEnabled = true
-        message.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(requestAccess)))
+        message.isUserInteractionEnabled = false
+        accessButton.setTitle("允许访问照片", for: .normal)
+        accessButton.backgroundColor = blue
+        accessButton.setTitleColor(.black, for: .normal)
+        accessButton.layer.cornerRadius = 14
+        accessButton.addAction(UIAction { [weak self] _ in self?.requestAccess() }, for: .touchUpInside)
         configure(menu, symbol: "ellipsis", action: #selector(showMenu))
         configure(undo, symbol: "arrow.uturn.backward", action: #selector(undoMark))
         configure(trash, symbol: "trash", action: #selector(review))
@@ -131,13 +138,13 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         countLabel.textColor = trash.tintColor; countLabel.textAlignment = .center
         countLabel.backgroundColor = blue; countLabel.isUserInteractionEnabled = false; trash.addSubview(countLabel)
         for v in [titleLabel, progress, menu, undo, trash, message] { view.addSubview(v) }
+        view.addSubview(accessButton)
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: UIApplication.didBecomeActiveNotification, object: nil)
         updateChrome()
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .notDetermined { requestAccess() }
-        else { refresh() }
+        refresh()
     }
     deinit {
         if observingLibrary { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
@@ -163,7 +170,8 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         undo.frame = CGRect(x: safe.left + 22, y: b.height - safe.bottom - 76, width: 58, height: 58)
         trash.frame = CGRect(x: b.width - safe.right - 80, y: undo.frame.minY, width: 58, height: 58)
         countLabel.frame = CGRect(x: 22, y: 27, width: 14, height: 13)
-        message.frame = CGRect(x: 28, y: b.midY - 55, width: b.width - 56, height: 110)
+        message.frame = CGRect(x: 28, y: b.midY - 100, width: b.width - 56, height: 140)
+        accessButton.frame = CGRect(x: max(28, b.midX - 120), y: b.midY + 48, width: min(240, b.width - 56), height: 52)
         let newFrame = CGRect(x: safe.left, y: safe.top + 74, width: b.width - safe.left - safe.right, height: max(100, b.height - safe.top - safe.bottom - 166))
         if grid.frame != newFrame { grid.frame = newFrame; flow.invalidateLayout() }
     }
@@ -178,36 +186,68 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         menu.accessibilityLabel = "更多选项"
     }
     @objc private func toggleChrome() { chrome.toggle(); updateChrome() }
+    private func showAccessFeedback(_ text: String) {
+        accessFeedback = text
+        message.text = text
+        chrome = true
+        updateChrome()
+    }
     @objc private func requestAccess() {
-        guard !requestingAccess else { return }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if requestingAccess {
+            showAccessFeedback("正在等待系统授权响应…\n若未弹窗，请等待 10 秒后重试")
+            return
+        }
         switch status {
         case .notDetermined:
-            guard view.window != nil, UIApplication.shared.applicationState == .active else { return }
+            guard view.window != nil else {
+                showAccessFeedback("界面尚未就绪，请稍后重试")
+                return
+            }
+            guard UIApplication.shared.applicationState == .active else {
+                showAccessFeedback("请回到拾光前台后再次点击")
+                return
+            }
+            // Menu dismissal must finish before asking the system to present its prompt.
+            if let presented = presentedViewController {
+                presented.dismiss(animated: true) { [weak self] in self?.requestAccess() }
+                return
+            }
             requestingAccess = true
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] _ in
+            let attempt = UUID()
+            accessAttempt = attempt
+            showAccessFeedback("正在请求照片访问权限…")
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
                 DispatchQueue.main.async {
-                    self?.requestingAccess = false
-                    self?.refresh()
+                    guard let self = self, self.accessAttempt == attempt else { return }
+                    self.requestingAccess = false
+                    self.accessFeedback = status == .notDetermined ? "系统未完成授权，请重试" : nil
+                    self.refresh()
                 }
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self = self, self.accessAttempt == attempt, self.requestingAccess else { return }
+                self.requestingAccess = false
+                self.showAccessFeedback("系统尚未返回授权结果\n请截图此页反馈，或点击按钮重试\n权限状态：\(PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue) · P3")
+            }
         case .authorized, .limited:
+            accessFeedback = nil
             refresh()
         case .denied:
+            showAccessFeedback("照片访问已被拒绝，正在打开设置\n权限状态：2 · P3")
             UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!)
         case .restricted:
-            message.text = "相册访问受到系统限制\n请检查屏幕使用时间或设备管理限制"
+            showAccessFeedback("相册访问受到系统限制\n请检查屏幕使用时间或设备管理限制\n权限状态：1 · P3")
         @unknown default:
-            message.text = "暂时无法获取相册权限\n轻点重试"
+            showAccessFeedback("未知权限状态：\(status.rawValue) · P3")
         }
     }
     @objc private func refresh() {
         if locked || querying { reloadNeeded = true; return }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        if status == .notDetermined && view.window != nil && UIApplication.shared.applicationState == .active {
-            requestAccess()
-        }
-        guard status == .authorized || status == .limited else { assets = [:]; dayAnchor = nil; dayIDs = []; grid.isHidden = true; imageToken = UUID(); PHImageManager.default().cancelImageRequest(request); photo.image = nil; message.text = status == .restricted ? "相册访问受到系统限制\n请检查屏幕使用时间或设备管理限制" : (status == .denied ? "需要相册访问权限\n轻点这里打开设置" : "需要相册访问权限\n轻点这里授权"); chrome = true; updateChrome(); return }
+        accessButton.isHidden = status == .authorized || status == .limited
+        accessButton.setTitle(status == .denied ? "打开照片权限设置" : "允许访问照片", for: .normal)
+        guard status == .authorized || status == .limited else { assets = [:]; dayAnchor = nil; dayIDs = []; grid.isHidden = true; imageToken = UUID(); PHImageManager.default().cancelImageRequest(request); photo.image = nil; message.text = accessFeedback ?? (status == .restricted ? "相册访问受到系统限制\n权限状态：1 · P3" : (status == .denied ? "需要在设置中允许照片访问\n权限状态：2 · P3" : "需要相册访问权限\n请点击下方按钮 · P3")); chrome = true; updateChrome(); return }
         if !observingLibrary {
             PHPhotoLibrary.shared().register(self)
             observingLibrary = true
@@ -408,7 +448,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         save(); if dayAnchor == nil { showPhoto() } else { dayIDs.removeAll { removed.contains($0) }; grid.reloadData(); updateChrome() }
     }
     @objc private func showMenu() {
-        let alert = UIAlertController(title: "拾光 · iOS 1.7.0", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "拾光 · iOS 1.7.0 · P3", message: nil, preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: dayAnchor == nil ? "回到那天" : "回到单张", style: .default) { _ in if self.dayAnchor == nil { self.enterDay() } else { self.leaveDay() } })
         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { alert.addAction(UIAlertAction(title: "调整可访问照片", style: .default) { _ in PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: self) }) }
         alert.addAction(UIAlertAction(title: "动态照片：" + (autoLive ? "自动播放" : "不播放"), style: .default) { _ in
