@@ -65,6 +65,8 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private var rows = 2
     private var chrome = false
     private var locked = false
+    private var requestingAccess = false
+    private var observingLibrary = false
     private var querying = false
     private var reloadNeeded = false
     private var lastMarked: String?
@@ -130,10 +132,17 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         countLabel.backgroundColor = blue; countLabel.isUserInteractionEnabled = false; trash.addSubview(countLabel)
         for v in [titleLabel, progress, menu, undo, trash, message] { view.addSubview(v) }
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: UIApplication.didBecomeActiveNotification, object: nil)
-        PHPhotoLibrary.shared().register(self)
-        updateChrome(); requestAccess()
+        updateChrome()
     }
-    deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self); NotificationCenter.default.removeObserver(self) }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .notDetermined { requestAccess() }
+        else { refresh() }
+    }
+    deinit {
+        if observingLibrary { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
+        NotificationCenter.default.removeObserver(self)
+    }
     private func configure(_ button: UIButton, symbol: String, action: Selector) {
         button.setImage(UIImage(systemName: symbol), for: .normal)
         button.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 24, weight: .medium), forImageIn: .normal)
@@ -170,15 +179,39 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     }
     @objc private func toggleChrome() { chrome.toggle(); updateChrome() }
     @objc private func requestAccess() {
+        guard !requestingAccess else { return }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        if status == .notDetermined { PHPhotoLibrary.requestAuthorization(for: .readWrite) { _ in DispatchQueue.main.async { self.refresh() } } }
-        else if status == .authorized || status == .limited { refresh() }
-        else { chrome = true; updateChrome(); message.text = "需要相册访问权限\n轻点这里打开设置"; if view.window != nil { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) } }
+        switch status {
+        case .notDetermined:
+            guard view.window != nil, UIApplication.shared.applicationState == .active else { return }
+            requestingAccess = true
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.requestingAccess = false
+                    self?.refresh()
+                }
+            }
+        case .authorized, .limited:
+            refresh()
+        case .denied:
+            UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!)
+        case .restricted:
+            message.text = "相册访问受到系统限制\n请检查屏幕使用时间或设备管理限制"
+        @unknown default:
+            message.text = "暂时无法获取相册权限\n轻点重试"
+        }
     }
     @objc private func refresh() {
         if locked || querying { reloadNeeded = true; return }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard status == .authorized || status == .limited else { assets = [:]; dayAnchor = nil; dayIDs = []; grid.isHidden = true; imageToken = UUID(); PHImageManager.default().cancelImageRequest(request); photo.image = nil; message.text = "需要相册访问权限\n轻点这里授权"; chrome = true; updateChrome(); return }
+        if status == .notDetermined && view.window != nil && UIApplication.shared.applicationState == .active {
+            requestAccess()
+        }
+        guard status == .authorized || status == .limited else { assets = [:]; dayAnchor = nil; dayIDs = []; grid.isHidden = true; imageToken = UUID(); PHImageManager.default().cancelImageRequest(request); photo.image = nil; message.text = status == .restricted ? "相册访问受到系统限制\n请检查屏幕使用时间或设备管理限制" : (status == .denied ? "需要相册访问权限\n轻点这里打开设置" : "需要相册访问权限\n轻点这里授权"); chrome = true; updateChrome(); return }
+        if !observingLibrary {
+            PHPhotoLibrary.shared().register(self)
+            observingLibrary = true
+        }
         querying = true
         DispatchQueue.global(qos: .userInitiated).async {
             let result = PHAsset.fetchAssets(with: .image, options: nil)
@@ -383,7 +416,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
             for (title, enabled) in [("自动播放",true),("不播放",false)] { settings.addAction(UIAlertAction(title: title, style: .default) { _ in UserDefaults.standard.set(enabled,forKey: "autoLive"); if self.dayAnchor == nil { self.showPhoto() } }) }
             settings.addAction(UIAlertAction(title: "取消", style: .cancel)); self.present(settings,animated:true)
         })
-        alert.addAction(UIAlertAction(title: "相册权限设置", style: .default) { _ in UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) })
+        alert.addAction(UIAlertAction(title: "相册访问权限", style: .default) { _ in self.requestAccess() })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel)); alert.popoverPresentationController?.sourceView = menu; alert.popoverPresentationController?.sourceRect = menu.bounds
         present(alert, animated: true)
     }
