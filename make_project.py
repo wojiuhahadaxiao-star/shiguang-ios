@@ -27,7 +27,7 @@ for key, kind, files in [(sources,'PBXSourcesBuildPhase',[build]),(frameworks,'P
 projectConfigs, targetConfigs = ident(20), ident(21)
 for configID, base, settings in [
     (projectConfigs,30,{'SDKROOT':'iphoneos','IPHONEOS_DEPLOYMENT_TARGET':'15.0','CLANG_ENABLE_MODULES':'YES','SWIFT_VERSION':'5.0'}),
-    (targetConfigs,40,{'PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'cn.shiguang.photos.ios','INFOPLIST_FILE':'Shiguang/Info.plist','CODE_SIGN_STYLE':'Automatic','TARGETED_DEVICE_FAMILY':'1,2','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','SWIFT_VERSION':'5.0','IPHONEOS_DEPLOYMENT_TARGET':'15.0','CURRENT_PROJECT_VERSION':'1','MARKETING_VERSION':'1.0','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks'],'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SWIFT_EMIT_LOC_STRINGS':'YES'})]:
+    (targetConfigs,40,{'PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'cn.shiguang.photos.ios','INFOPLIST_FILE':'Shiguang/Info.plist','CODE_SIGN_STYLE':'Automatic','TARGETED_DEVICE_FAMILY':'1,2','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','SWIFT_VERSION':'5.0','IPHONEOS_DEPLOYMENT_TARGET':'15.0','CURRENT_PROJECT_VERSION':'2','MARKETING_VERSION':'1.7.0','LD_RUNPATH_SEARCH_PATHS':['$(inherited)','@executable_path/Frameworks'],'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SWIFT_EMIT_LOC_STRINGS':'YES'})]:
     configs=[]
     for i,name in enumerate(['Debug','Release']):
         s=dict(settings);s['SWIFT_OPTIMIZATION_LEVEL']='-Onone' if name=='Debug' else '-O'

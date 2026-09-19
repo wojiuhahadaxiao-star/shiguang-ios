@@ -1,6 +1,7 @@
 import UIKit
 import Photos
 import PhotosUI
+
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
@@ -18,6 +19,8 @@ struct ReviewState: Codable {
     var order: [String] = []
     var pending: Set<String> = []
     var visited: Set<String> = []
+    var batchStart: Int? = nil
+    var position: Int { order.isEmpty ? 0 : min(25,max(1,index-(batchStart ?? max(0,index-visited.count))+1)) }
     var index = 0
     var current: String? { order.indices.contains(index) ? order[index] : nil }
     mutating func reconcile(_ available: [String]) {
@@ -80,6 +83,11 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private lazy var gridPan = UIPanGestureRecognizer(target: self, action: #selector(panTile(_:)))
     private lazy var dayPinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchDay(_:)))
     private var lastSize = CGSize.zero
+    private let live = PHLivePhotoView()
+    private var liveRequest: PHImageRequestID = PHInvalidImageRequestID
+    private var pinchFromOriginal = true
+    private var dayPinchID: String?
+    private var autoLive: Bool { UserDefaults.standard.bool(forKey: "autoLive") }
 
     override var prefersStatusBarHidden: Bool { true }
     override func viewDidLoad() {
@@ -87,9 +95,11 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         overrideUserInterfaceStyle = .dark
         view.backgroundColor = UIColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1)
         if let data = UserDefaults.standard.data(forKey: "review"), let saved = try? JSONDecoder().decode(ReviewState.self, from: data) { state = saved }
+        if state.batchStart == nil { state.batchStart = max(0,state.index-state.visited.count) }
         zoom.delegate = self; zoom.minimumZoomScale = 0.65; zoom.maximumZoomScale = 8
         zoom.showsHorizontalScrollIndicator = false; zoom.showsVerticalScrollIndicator = false
         zoom.contentInsetAdjustmentBehavior = .never
+        live.contentMode = .scaleAspectFit; live.isUserInteractionEnabled = false; photo.addSubview(live)
         photo.contentMode = .scaleAspectFit; zoom.addSubview(photo); view.addSubview(zoom)
         singlePan.delegate = self; singlePan.maximumNumberOfTouches = 1; zoom.addGestureRecognizer(singlePan)
         zoom.panGestureRecognizer.require(toFail: singlePan)
@@ -136,6 +146,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         if lastSize != b.size {
             lastSize = b.size; zoom.setZoomScale(1, animated: false); zoom.frame = b; photo.frame = zoom.bounds; zoom.contentSize = b.size
         }
+        live.frame = photo.bounds
         let y = safe.top + 10
         titleLabel.frame = CGRect(x: safe.left + 22, y: y, width: max(100, b.width - safe.left - safe.right - 205), height: 50)
         progress.frame = CGRect(x: b.width - safe.right - 147, y: y, width: 75, height: 50)
@@ -150,7 +161,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private func save() { if let data = try? JSONEncoder().encode(state) { UserDefaults.standard.set(data, forKey: "review") } }
     private func updateChrome() {
         titleLabel.text = dayAnchor == nil ? "拾光" : dayAnchor.flatMap { assets[$0]?.creationDate }.map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .none) }
-        progress.text = "\(state.visited.count) / 25"; countLabel.text = state.pending.count > 99 ? "99+" : "\(state.pending.count)"
+        progress.text = "\(state.position) / 25"; countLabel.text = state.pending.count > 99 ? "99+" : "\(state.pending.count)"
         for v in [titleLabel, progress, menu, undo, trash] { v.isHidden = !chrome }
         undo.isEnabled = !state.pending.isEmpty && !locked; undo.alpha = undo.isEnabled ? 1 : 0.4
         trash.isEnabled = !locked; menu.isEnabled = !locked
@@ -185,11 +196,18 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     }
     func photoLibraryDidChange(_ changeInstance: PHChange) { DispatchQueue.main.async { self.refresh() } }
     private func showPhoto() {
+        live.stopPlayback(); live.livePhoto = nil; PHImageManager.default().cancelImageRequest(liveRequest)
         updateChrome(); zoom.setZoomScale(1, animated: false); photo.transform = .identity; photo.alpha = 1
         PHImageManager.default().cancelImageRequest(request); imageToken = UUID(); let token = imageToken
         photo.image = nil
         guard let id = state.current, let asset = assets[id] else { message.text = "暂无可浏览照片\n轻点授权，或在菜单调整可访问的照片"; chrome = true; updateChrome(); return }
         message.text = ""
+        if autoLive && asset.mediaSubtypes.contains(.photoLive) {
+            let options = PHLivePhotoRequestOptions(); options.isNetworkAccessAllowed = true
+            liveRequest = PHImageManager.default().requestLivePhoto(for: asset, targetSize: view.bounds.size, contentMode: .aspectFit, options: options) { [weak self] value, _ in
+                DispatchQueue.main.async { guard let self = self, self.imageToken == token, self.dayAnchor == nil, self.autoLive else { return }; self.live.livePhoto = value; self.live.startPlayback(with: .full) }
+            }
+        }
         let options = PHImageRequestOptions(); options.isNetworkAccessAllowed = true; options.deliveryMode = .opportunistic
         let screen = view.bounds.size, scale = UIScreen.main.scale
         let target = CGSize(width: min(4096, screen.width * scale * 2), height: min(4096, screen.height * scale * 2))
@@ -202,9 +220,12 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         }
     }
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { scrollView === zoom ? photo : nil }
+    func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+        guard scrollView === zoom else { return }; pinchFromOriginal = zoom.zoomScale <= 1; zoom.minimumZoomScale = pinchFromOriginal ? 0.65 : 1; live.stopPlayback()
+    }
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
         guard scrollView === zoom else { return }
-        if scale < 0.84 { zoom.setZoomScale(1, animated: false); enterDay() }
+        if pinchFromOriginal && scale < 0.84 { zoom.setZoomScale(1, animated: false); enterDay() }
         else if scale < 1 { zoom.setZoomScale(1, animated: true) }
     }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -233,10 +254,10 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private func resetPhoto() { UIView.animate(withDuration: 0.2) { self.photo.transform = .identity; self.photo.alpha = 1 } }
     private func advance(discard: Bool, backwards: Bool) {
         guard let id = state.current else { return }
-        if backwards { state.index = max(0,state.index - 1); save(); showPhoto(); return }
+        if backwards { state.index = max(state.batchStart ?? 0,state.index - 1); save(); showPhoto(); return }
         if discard { mark(id) }
         state.visited.insert(id)
-        let due = state.visited.count >= 25 || state.index == state.order.count - 1
+        let due = state.position >= 25 || state.index == state.order.count - 1
         if !due { state.index += 1 }
         save(); showPhoto(); if due { review() }
     }
@@ -253,6 +274,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
             alert.addAction(UIAlertAction(title: "好", style: .default)); present(alert, animated: true); return
         }
         dayIDs = assets.values.filter { $0.creationDate.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false }.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }.map(\.localIdentifier)
+        live.stopPlayback(); live.livePhoto = nil
         dayAnchor = id; state.visited.insert(id); save(); rows = 2
         grid.reloadData(); flow.invalidateLayout(); grid.layoutIfNeeded()
         grid.isHidden = false; grid.alpha = 0
@@ -268,9 +290,10 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     }
     @objc private func pinchDay(_ pinch: UIPinchGestureRecognizer) {
         guard !locked else { return }
+        if pinch.state == .began { dayPinchID = grid.indexPathForItem(at: pinch.location(in: grid)).map { dayIDs[$0.item] } }
         if pinch.state == .ended {
             if pinch.scale < 0.85 { rows = 3 }
-            else if pinch.scale > 1.18 { if rows == 2 { leaveDay(); return }; rows = 2 }
+            else if pinch.scale > 1.18 { if let id = dayPinchID, let asset = assets[id] { present(PhotoViewer(assets: [asset], autoLive: autoLive), animated: true) }; return }
             let anchor = grid.indexPathsForVisibleItems.sorted().first
             grid.performBatchUpdates({ self.flow.invalidateLayout() }) { _ in if let anchor = anchor { self.grid.scrollToItem(at: anchor, at: .left, animated: true) } }
         }
@@ -316,6 +339,19 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
             alert.addAction(UIAlertAction(title: "继续浏览", style: .default) { _ in self.finishBatch([]) })
             alert.addAction(UIAlertAction(title: "返回", style: .cancel)); present(alert, animated: true); return
         }
+        let alert = UIAlertController(title: "本轮第 \(state.position) / 25 张", message: "已标记 \(state.pending.count) 张照片", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "回看已标记", style: .default) { _ in
+            let items = self.state.pending.sorted().compactMap { self.assets[$0] }
+            let viewer = PhotoViewer(assets: items, autoLive: self.autoLive)
+            viewer.isMarked = { self.state.pending.contains($0) }
+            viewer.toggleMark = { id in if self.state.pending.contains(id) { self.state.pending.remove(id) } else { self.state.pending.insert(id) }; self.save(); self.updateChrome(); self.grid.reloadData() }
+            self.present(viewer, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "删除已标记照片", style: .destructive) { _ in self.deletePending() })
+        alert.addAction(UIAlertAction(title: "继续检查", style: .cancel)); present(alert, animated: true)
+    }
+    private func deletePending() {
+        guard !state.pending.isEmpty else { return }
         let ids = state.pending, fetched = PHAsset.fetchAssets(withLocalIdentifiers: Array(ids), options: nil)
         locked = true; updateChrome()
         PHPhotoLibrary.shared().performChanges({ PHAssetChangeRequest.deleteAssets(fetched) }) { success, error in
@@ -335,14 +371,71 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         state.order.removeAll { removed.contains($0) }; state.pending.removeAll(); state.visited.removeAll(); lastMarked = nil
         if let old = old, let i = state.order.firstIndex(of: old) { state.index = min(i+1, max(0,state.order.count-1)) }
         else { state.index = min(state.index,max(0,state.order.count-1)) }
+        state.batchStart = state.index
         save(); if dayAnchor == nil { showPhoto() } else { dayIDs.removeAll { removed.contains($0) }; grid.reloadData(); updateChrome() }
     }
     @objc private func showMenu() {
-        let alert = UIAlertController(title: "拾光 · iOS 1.0", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "拾光 · iOS 1.7.0", message: nil, preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: dayAnchor == nil ? "回到那天" : "回到单张", style: .default) { _ in if self.dayAnchor == nil { self.enterDay() } else { self.leaveDay() } })
         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { alert.addAction(UIAlertAction(title: "调整可访问照片", style: .default) { _ in PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: self) }) }
+        alert.addAction(UIAlertAction(title: "动态照片：" + (autoLive ? "自动播放" : "不播放"), style: .default) { _ in
+            let settings = UIAlertController(title: "动态照片", message: nil, preferredStyle: .alert)
+            for (title, enabled) in [("自动播放",true),("不播放",false)] { settings.addAction(UIAlertAction(title: title, style: .default) { _ in UserDefaults.standard.set(enabled,forKey: "autoLive"); if self.dayAnchor == nil { self.showPhoto() } }) }
+            settings.addAction(UIAlertAction(title: "取消", style: .cancel)); self.present(settings,animated:true)
+        })
         alert.addAction(UIAlertAction(title: "相册权限设置", style: .default) { _ in UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel)); alert.popoverPresentationController?.sourceView = menu; alert.popoverPresentationController?.sourceRect = menu.bounds
         present(alert, animated: true)
     }
+}
+
+final class PhotoViewer: UIViewController, UIScrollViewDelegate {
+    private let items: [PHAsset]
+    private let autoLive: Bool
+    var isMarked: ((String) -> Bool)?
+    var toggleMark: ((String) -> Void)?
+    private var index = 0
+    private let scroll = UIScrollView(), image = UIImageView(), live = PHLivePhotoView()
+    private let caption = UILabel(), markButton = UIButton(type: .system)
+    private var token = UUID()
+    private var requests: [PHImageRequestID] = []
+    init(assets: [PHAsset], autoLive: Bool) { self.items = assets; self.autoLive = autoLive; super.init(nibName:nil,bundle:nil); modalPresentationStyle = .fullScreen }
+    required init?(coder: NSCoder) { fatalError("init(coder:)") }
+    override func viewDidLoad() {
+        super.viewDidLoad(); view.backgroundColor = .black; view.tintColor = UIColor(red:137/255,green:207/255,blue:240/255,alpha:1)
+        scroll.delegate = self; scroll.minimumZoomScale = 1; scroll.maximumZoomScale = 8; scroll.contentInsetAdjustmentBehavior = .never
+        image.contentMode = .scaleAspectFit; live.contentMode = .scaleAspectFit; live.isUserInteractionEnabled = false
+        image.addSubview(live); scroll.addSubview(image); view.addSubview(scroll)
+        let bar = UIStackView(); bar.axis = .vertical; bar.spacing = 8; bar.alignment = .fill; bar.translatesAutoresizingMaskIntoConstraints = false
+        caption.textAlignment = .center; caption.textColor = view.tintColor; bar.addArrangedSubview(caption)
+        let controls = UIStackView(); controls.distribution = .fillEqually
+        for (title, selector) in [("上一张",#selector(previous)),("返回",#selector(close)),("下一张",#selector(next))] {
+            let button = UIButton(type:.system); button.setTitle(title,for:.normal); button.addTarget(self,action:selector,for:.touchUpInside); controls.addArrangedSubview(button)
+        }
+        controls.heightAnchor.constraint(equalToConstant:48).isActive = true; bar.addArrangedSubview(controls)
+        markButton.addTarget(self,action:#selector(toggle),for:.touchUpInside); markButton.isHidden = toggleMark == nil; bar.addArrangedSubview(markButton)
+        view.addSubview(bar)
+        NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.leadingAnchor,constant:16),bar.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor,constant:-16),bar.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor,constant:-12)])
+        load()
+    }
+    override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); let frame = CGRect(x:0,y:view.safeAreaInsets.top,width:view.bounds.width,height:max(1,view.bounds.height-view.safeAreaInsets.top-view.safeAreaInsets.bottom-150)); if scroll.frame != frame { scroll.setZoomScale(1,animated:false); scroll.frame=frame; image.frame=scroll.bounds; live.frame=image.bounds; scroll.contentSize=image.bounds.size } }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { image }
+    private func load() {
+        guard items.indices.contains(index) else { return }
+        for request in requests { PHImageManager.default().cancelImageRequest(request) }; requests=[]
+        token=UUID(); let currentToken=token; let asset=items[index]; live.stopPlayback(); live.livePhoto=nil; image.image=nil; scroll.setZoomScale(1,animated:false)
+        caption.text="\(index+1) / \(items.count)"; updateMark()
+        let options=PHImageRequestOptions(); options.isNetworkAccessAllowed=true
+        requests.append(PHImageManager.default().requestImage(for:asset,targetSize:CGSize(width:4096,height:4096),contentMode:.aspectFit,options:options) { [weak self] value,_ in DispatchQueue.main.async { guard let self=self,self.token==currentToken else { return }; self.image.image=value } })
+        if autoLive && asset.mediaSubtypes.contains(.photoLive) {
+            let options=PHLivePhotoRequestOptions(); options.isNetworkAccessAllowed=true
+            requests.append(PHImageManager.default().requestLivePhoto(for:asset,targetSize:CGSize(width:1600,height:1600),contentMode:.aspectFit,options:options) { [weak self] value,_ in DispatchQueue.main.async { guard let self=self,self.token==currentToken else { return }; self.live.livePhoto=value; self.live.startPlayback(with:.full) } })
+        }
+    }
+    private func updateMark(){ guard items.indices.contains(index) else { return }; markButton.setTitle(isMarked?(items[index].localIdentifier) == true ? "取消删除标记，保留照片" : "已保留 · 重新标记删除",for:.normal) }
+    @objc private func toggle(){ guard items.indices.contains(index) else { return }; toggleMark?(items[index].localIdentifier); updateMark() }
+    @objc private func previous(){ if index>0 { index-=1;load() } }
+    @objc private func next(){ if index+1<items.count { index+=1;load() } }
+    @objc private func close(){ dismiss(animated:true) }
+    override func viewWillDisappear(_ animated:Bool){ super.viewWillDisappear(animated); token=UUID();live.stopPlayback();for request in requests { PHImageManager.default().cancelImageRequest(request) } }
 }
