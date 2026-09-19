@@ -31,6 +31,9 @@ for configID, base, settings in [
     configs=[]
     for i,name in enumerate(['Debug','Release']):
         s=dict(settings);s['SWIFT_OPTIMIZATION_LEVEL']='-Onone' if name=='Debug' else '-O'
+        if configID == targetConfigs:
+            s['MARKETING_VERSION'] = '1.7.1'
+            s['CURRENT_PROJECT_VERSION'] = '4'
         if name=='Debug':s['SWIFT_ACTIVE_COMPILATION_CONDITIONS']='DEBUG'
         configs.append(obj(ident(base+i),{'isa':'XCBuildConfiguration','name':name,'buildSettings':s}))
     obj(configID,{'isa':'XCConfigurationList','buildConfigurations':configs,'defaultConfigurationIsVisible':0,'defaultConfigurationName':'Release'})
@@ -45,5 +48,11 @@ pbx = {'archiveVersion':1,'classes':{},'objectVersion':56,'objects':objects,'roo
 (root/'Shiguang.xcodeproj').mkdir(exist_ok=True)
 (root/'Shiguang.xcodeproj/project.pbxproj').write_text('// !$*UTF8*$!\n'+serialize(pbx)+'\n')
 info = {'CFBundleDevelopmentRegion':'zh-Hans','CFBundleDisplayName':'拾光','CFBundleExecutable':'$(EXECUTABLE_NAME)','CFBundleIdentifier':'$(PRODUCT_BUNDLE_IDENTIFIER)','CFBundleInfoDictionaryVersion':'6.0','CFBundleName':'$(PRODUCT_NAME)','CFBundlePackageType':'APPL','CFBundleShortVersionString':'$(MARKETING_VERSION)','CFBundleVersion':'$(CURRENT_PROJECT_VERSION)','LSRequiresIPhoneOS':True,'UILaunchScreen':{},'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'],'UISupportedInterfaceOrientations~ipad':['UIInterfaceOrientationPortrait','UIInterfaceOrientationPortraitUpsideDown','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'],'NSPhotoLibraryUsageDescription':'拾光需要读取照片，以随机浏览、按拍摄日期整理，并在您确认后删除选中的照片。','UIUserInterfaceStyle':'Dark'}
+info['UIApplicationSceneManifest'] = {
+    'UIApplicationSupportsMultipleScenes': False,
+    'UISceneConfigurations': {'UIWindowSceneSessionRoleApplication': [
+        {'UISceneConfigurationName': 'Main', 'UISceneDelegateClassName': '$(PRODUCT_MODULE_NAME).SceneDelegate'}
+    ]}
+}
 (root/'Shiguang/Info.plist').write_bytes(plistlib.dumps(info))
 print('Generated Shiguang.xcodeproj and Info.plist')

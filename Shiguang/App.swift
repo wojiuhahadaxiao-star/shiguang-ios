@@ -6,12 +6,227 @@ import PhotosUI
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = PhotoController()
-        window.tintColor = UIColor(red: 137/255, green: 207/255, blue: 240/255, alpha: 1)
-        window.makeKeyAndVisible()
-        self.window = window
         return true
+    }
+    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: "Main", sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+}
+
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let scene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: scene)
+        self.window = window
+        window.rootViewController = PhotoAccessController()
+        window.makeKeyAndVisible()
+    }
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        (window?.rootViewController as? PhotoAccessController)?.refreshAccess()
+    }
+}
+
+// Do not instantiate the photo browser or PHLivePhotoView until authorization succeeds.
+final class PhotoAccessController: UIViewController, PHPickerViewControllerDelegate {
+    private let statusLabel = UILabel()
+    private let authorize = UIButton(type: .system)
+    private var inFlight = false
+    private var timedOut = false
+    private var detail = "随机浏览和整理照片，需要你先允许相册访问。"
+    private let blue = UIColor(red: 137/255, green: 207/255, blue: 240/255, alpha: 1)
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        overrideUserInterfaceStyle = .dark
+        view.backgroundColor = UIColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1)
+        view.tintColor = blue
+        let title = UILabel()
+        title.text = "拾光 · P4"
+        title.font = .systemFont(ofSize: 28, weight: .semibold)
+        title.textColor = blue
+        title.textAlignment = .center
+        statusLabel.numberOfLines = 0
+        statusLabel.font = .systemFont(ofSize: 16)
+        statusLabel.textColor = blue
+        statusLabel.textAlignment = .center
+        authorize.setTitle("允许访问照片", for: .normal)
+        authorize.backgroundColor = blue
+        authorize.setTitleColor(.black, for: .normal)
+        authorize.layer.cornerRadius = 14
+        authorize.heightAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
+        authorize.addAction(UIAction { [weak self] _ in self?.askForAccess() }, for: .touchUpInside)
+        let select = UIButton(type: .system)
+        select.setTitle("暂不授权，选择照片预览", for: .normal)
+        select.addAction(UIAction { [weak self] _ in self?.openPicker() }, for: .touchUpInside)
+        let report = UIButton(type: .system)
+        report.setTitle("查看诊断信息", for: .normal)
+        report.addAction(UIAction { [weak self] _ in self?.showReport() }, for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [title, statusLabel, authorize, select, report])
+        stack.axis = .vertical
+        stack.spacing = 24
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -28),
+            stack.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor)
+        ])
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        refreshAccess()
+    }
+    func refreshAccess() {
+        guard isViewLoaded else { return }
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .authorized || status == .limited {
+            // Defer switching while the system picker or another sheet is visible.
+            guard presentedViewController == nil,
+                  let window = view.window,
+                  window.windowScene?.activationState == .foregroundActive else { return }
+            window.rootViewController = PhotoController()
+            return
+        }
+        if status == .denied { detail = "照片访问已被拒绝，请前往设置调整权限。" }
+        if status == .restricted { detail = "照片访问被系统限制。请检查屏幕使用时间或设备管理设置。" }
+        statusLabel.text = detail
+        authorize.isEnabled = !inFlight && status != .restricted
+        authorize.setTitle(status == .denied ? "打开权限设置" : (inFlight ? "等待系统授权…" : "允许访问照片"), for: .normal)
+    }
+    private func askForAccess() {
+        guard !inFlight else { return }
+        guard view.window?.windowScene?.activationState == .foregroundActive else {
+            detail = "请将拾光保持在前台后重试。"; refreshAccess(); return
+        }
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .notDetermined else {
+            if status == .denied { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) }
+            refreshAccess(); return
+        }
+        guard let purpose = Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryUsageDescription") as? String,
+              !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            detail = "安装包缺少照片用途声明。请发送此安装包供检查。"; refreshAccess(); return
+        }
+        inFlight = true
+        detail = "正在请求系统授权，请在弹出的窗口中选择访问范围。"
+        refreshAccess()
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.inFlight = false
+                self.detail = "系统已返回，请选择访问范围。"
+                self.refreshAccess()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self = self, self.inFlight else { return }
+            self.timedOut = true
+            // A timeout does not cancel the OS request. Never enqueue duplicate requests.
+            self.detail = "系统授权暂未响应。可先选择照片预览。完整相册整理仍需授权；请查看诊断信息。"
+            self.refreshAccess()
+        }
+    }
+    private func openPicker() {
+        guard presentedViewController == nil else { return }
+        // Default configuration deliberately does not request PHPhotoLibrary access.
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        configuration.selectionLimit = 25
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true) { [weak self] in
+            guard let self = self else { return }
+            if results.isEmpty { self.refreshAccess(); return }
+            let preview = SelectedPhotoPreview(results: results)
+            preview.onClose = { [weak self] in self?.refreshAccess() }
+            preview.modalPresentationStyle = .fullScreen
+            self.present(preview, animated: true)
+        }
+    }
+    private func showReport() {
+        let purpose = Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryUsageDescription") as? String ?? "缺失"
+        let text = "版本：1.7.1 P4\n系统：\(UIDevice.current.systemVersion)\n包名：\(Bundle.main.bundleIdentifier ?? "未知")\n照片权限：\(PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue)\n活动场景：\(view.window?.windowScene?.activationState == .foregroundActive)\n请求等待：\(inFlight)，超时：\(timedOut)\n用途声明：\(purpose)"
+        let alert = UIAlertController(title: "授权诊断", message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "复制", style: .default) { _ in UIPasteboard.general.string = text })
+        alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        present(alert, animated: true)
+    }
+}
+
+// Explicit read-only fallback; imported selections cannot delete originals or expose the library.
+final class SelectedPhotoPreview: UIViewController, UIScrollViewDelegate {
+    private let results: [PHPickerResult]
+    private var index = 0
+    private var token = UUID()
+    private let image = UIImageView()
+    private let scroll = UIScrollView()
+    private let caption = UILabel()
+    var onClose: (() -> Void)?
+    init(results: [PHPickerResult]) { self.results = results; super.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { fatalError("init(coder:)") }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        view.tintColor = UIColor(red: 137/255, green: 207/255, blue: 240/255, alpha: 1)
+        scroll.delegate = self; scroll.minimumZoomScale = 1; scroll.maximumZoomScale = 8
+        image.contentMode = .scaleAspectFit
+        scroll.addSubview(image); view.addSubview(scroll)
+        caption.textColor = view.tintColor; caption.textAlignment = .center; caption.numberOfLines = 0
+        caption.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(caption)
+        let controls = UIStackView(); controls.axis = .horizontal; controls.distribution = .fillEqually
+        controls.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(controls)
+        let previous = UIButton(type: .system); previous.setTitle("上一张", for: .normal)
+        previous.addAction(UIAction { [weak self] _ in self?.move(-1) }, for: .touchUpInside)
+        let close = UIButton(type: .system); close.setTitle("返回授权", for: .normal)
+        close.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            let completion = self.onClose
+            self.dismiss(animated: true, completion: completion)
+        }, for: .touchUpInside)
+        let next = UIButton(type: .system); next.setTitle("下一张", for: .normal)
+        next.addAction(UIAction { [weak self] _ in self?.move(1) }, for: .touchUpInside)
+        for button in [previous, close, next] { controls.addArrangedSubview(button) }
+        NSLayoutConstraint.activate([
+            caption.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            caption.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            caption.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            controls.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            controls.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            controls.heightAnchor.constraint(equalToConstant: 54)
+        ])
+        show()
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let safe = view.safeAreaInsets
+        let frame = CGRect(x: 0, y: safe.top + 70, width: view.bounds.width,
+                           height: max(1, view.bounds.height - safe.top - safe.bottom - 140))
+        if scroll.frame != frame {
+            scroll.setZoomScale(1, animated: false); scroll.frame = frame
+            image.frame = scroll.bounds; scroll.contentSize = scroll.bounds.size
+        }
+    }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { image }
+    private func move(_ delta: Int) { index = min(results.count - 1, max(0, index + delta)); show() }
+    private func show() {
+        guard results.indices.contains(index) else { return }
+        scroll.setZoomScale(1, animated: false); image.image = nil
+        token = UUID(); let current = token
+        caption.text = "所选照片 \(index + 1) / \(results.count)\n只读预览 · 不会删除相册原图"
+        results[index].itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+            DispatchQueue.main.async {
+                guard let self = self, self.token == current else { return }
+                self.image.image = object as? UIImage
+                if self.image.image == nil { self.caption.text = "照片载入失败，请返回重选或检查 iCloud 网络" }
+            }
+        }
     }
 }
 
@@ -65,9 +280,6 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
     private var rows = 2
     private var chrome = false
     private var locked = false
-    private var requestingAccess = false
-    private var accessAttempt = UUID()
-    private var accessFeedback: String?
     private let accessButton = UIButton(type: .system)
     private var observingLibrary = false
     private var querying = false
@@ -186,60 +398,12 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         menu.accessibilityLabel = "更多选项"
     }
     @objc private func toggleChrome() { chrome.toggle(); updateChrome() }
-    private func showAccessFeedback(_ text: String) {
-        accessFeedback = text
-        message.text = text
-        chrome = true
-        updateChrome()
-    }
     @objc private func requestAccess() {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        if requestingAccess {
-            showAccessFeedback("正在等待系统授权响应…\n若未弹窗，请等待 10 秒后重试")
-            return
-        }
-        switch status {
-        case .notDetermined:
-            guard view.window != nil else {
-                showAccessFeedback("界面尚未就绪，请稍后重试")
-                return
-            }
-            guard UIApplication.shared.applicationState == .active else {
-                showAccessFeedback("请回到拾光前台后再次点击")
-                return
-            }
-            // Menu dismissal must finish before asking the system to present its prompt.
-            if let presented = presentedViewController {
-                presented.dismiss(animated: true) { [weak self] in self?.requestAccess() }
-                return
-            }
-            requestingAccess = true
-            let attempt = UUID()
-            accessAttempt = attempt
-            showAccessFeedback("正在请求照片访问权限…")
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
-                DispatchQueue.main.async {
-                    guard let self = self, self.accessAttempt == attempt else { return }
-                    self.requestingAccess = false
-                    self.accessFeedback = status == .notDetermined ? "系统未完成授权，请重试" : nil
-                    self.refresh()
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-                guard let self = self, self.accessAttempt == attempt, self.requestingAccess else { return }
-                self.requestingAccess = false
-                self.showAccessFeedback("系统尚未返回授权结果\n请截图此页反馈，或点击按钮重试\n权限状态：\(PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue) · P3")
-            }
-        case .authorized, .limited:
-            accessFeedback = nil
-            refresh()
-        case .denied:
-            showAccessFeedback("照片访问已被拒绝，正在打开设置\n权限状态：2 · P3")
+        if status == .authorized || status == .limited {
             UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!)
-        case .restricted:
-            showAccessFeedback("相册访问受到系统限制\n请检查屏幕使用时间或设备管理限制\n权限状态：1 · P3")
-        @unknown default:
-            showAccessFeedback("未知权限状态：\(status.rawValue) · P3")
+        } else {
+            view.window?.rootViewController = PhotoAccessController()
         }
     }
     @objc private func refresh() {
@@ -247,7 +411,14 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         accessButton.isHidden = status == .authorized || status == .limited
         accessButton.setTitle(status == .denied ? "打开照片权限设置" : "允许访问照片", for: .normal)
-        guard status == .authorized || status == .limited else { assets = [:]; dayAnchor = nil; dayIDs = []; grid.isHidden = true; imageToken = UUID(); PHImageManager.default().cancelImageRequest(request); photo.image = nil; message.text = accessFeedback ?? (status == .restricted ? "相册访问受到系统限制\n权限状态：1 · P3" : (status == .denied ? "需要在设置中允许照片访问\n权限状态：2 · P3" : "需要相册访问权限\n请点击下方按钮 · P3")); chrome = true; updateChrome(); return }
+        guard status == .authorized || status == .limited else {
+            imageToken = UUID()
+            PHImageManager.default().cancelImageRequest(request)
+            PHImageManager.default().cancelImageRequest(liveRequest)
+            live.stopPlayback(); photo.image = nil
+            view.window?.rootViewController = PhotoAccessController()
+            return
+        }
         if !observingLibrary {
             PHPhotoLibrary.shared().register(self)
             observingLibrary = true
@@ -448,7 +619,7 @@ final class PhotoController: UIViewController, UIScrollViewDelegate, UICollectio
         save(); if dayAnchor == nil { showPhoto() } else { dayIDs.removeAll { removed.contains($0) }; grid.reloadData(); updateChrome() }
     }
     @objc private func showMenu() {
-        let alert = UIAlertController(title: "拾光 · iOS 1.7.0 · P3", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "拾光 · iOS 1.7.1 · P4", message: nil, preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: dayAnchor == nil ? "回到那天" : "回到单张", style: .default) { _ in if self.dayAnchor == nil { self.enterDay() } else { self.leaveDay() } })
         if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited { alert.addAction(UIAlertAction(title: "调整可访问照片", style: .default) { _ in PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: self) }) }
         alert.addAction(UIAlertAction(title: "动态照片：" + (autoLive ? "自动播放" : "不播放"), style: .default) { _ in

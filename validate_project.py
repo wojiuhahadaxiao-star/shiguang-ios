@@ -20,6 +20,14 @@ for item in objects.values():
 with (root/'Shiguang/Info.plist').open('rb') as f:
     info = plistlib.load(f)
 assert info['NSPhotoLibraryUsageDescription']
+assert info['UIApplicationSceneManifest']['UIApplicationSupportsMultipleScenes'] is False
+assert info['UIApplicationSceneManifest']['UISceneConfigurations']['UIWindowSceneSessionRoleApplication'][0]['UISceneDelegateClassName'].endswith('.SceneDelegate')
+source_text = (root/'Shiguang/App.swift').read_text()
+assert source_text.count('PHPhotoLibrary.requestAuthorization(for: .readWrite)') == 1, 'Only the permission gate may request access'
+gate_source = source_text.split('final class PhotoAccessController:', 1)[1].split('final class SelectedPhotoPreview:', 1)[0]
+assert 'PHImageManager' not in gate_source
+assert 'PHLivePhotoView()' not in gate_source
+assert 'PHPickerConfiguration()' in gate_source
 with (root/'Shiguang/PrivacyInfo.xcprivacy').open('rb') as f: plistlib.load(f)
 scheme = ET.parse(root/'Shiguang.xcodeproj/xcshareddata/xcschemes/Shiguang.xcscheme')
 for element in scheme.findall('.//BuildableReference'):
