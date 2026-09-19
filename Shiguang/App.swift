@@ -409,11 +409,20 @@ final class PhotoViewer: UIViewController, UIScrollViewDelegate {
         let bar = UIStackView(); bar.axis = .vertical; bar.spacing = 8; bar.alignment = .fill; bar.translatesAutoresizingMaskIntoConstraints = false
         caption.textAlignment = .center; caption.textColor = view.tintColor; bar.addArrangedSubview(caption)
         let controls = UIStackView(); controls.distribution = .fillEqually
-        for (title, selector) in [("上一张",#selector(showPreviousPhoto())),("返回",#selector(closeViewer())),("下一张",#selector(showNextPhoto()))] {
-            let button = UIButton(type:.system); button.setTitle(title,for:.normal); button.addTarget(self,action:selector,for:.touchUpInside); controls.addArrangedSubview(button)
-        }
+        let previousButton = UIButton(type: .system)
+        previousButton.setTitle("上一张", for: .normal)
+        previousButton.addAction(UIAction { [weak self] _ in self?.showPreviousPhoto() }, for: .touchUpInside)
+        controls.addArrangedSubview(previousButton)
+        let closeButton = UIButton(type: .system)
+        closeButton.setTitle("返回", for: .normal)
+        closeButton.addAction(UIAction { [weak self] _ in self?.closeViewer() }, for: .touchUpInside)
+        controls.addArrangedSubview(closeButton)
+        let nextButton = UIButton(type: .system)
+        nextButton.setTitle("下一张", for: .normal)
+        nextButton.addAction(UIAction { [weak self] _ in self?.showNextPhoto() }, for: .touchUpInside)
+        controls.addArrangedSubview(nextButton)
         controls.heightAnchor.constraint(equalToConstant:48).isActive = true; bar.addArrangedSubview(controls)
-        markButton.addTarget(self,action:#selector(toggle),for:.touchUpInside); markButton.isHidden = toggleMark == nil; bar.addArrangedSubview(markButton)
+        markButton.addAction(UIAction { [weak self] _ in self?.toggle() }, for: .touchUpInside); markButton.isHidden = toggleMark == nil; bar.addArrangedSubview(markButton)
         view.addSubview(bar)
         NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.leadingAnchor,constant:16),bar.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor,constant:-16),bar.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor,constant:-12)])
         load()
