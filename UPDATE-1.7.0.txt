@@ -1,0 +1,12 @@
+拾光 iOS 1.7.0
+
+GitHub 更新：
+1. 解压本包。
+2. 仓库 Code 页面选择 Add file / Upload files。
+3. 拖入 Shiguang、Shiguang.xcodeproj 两个文件夹，以及 make_project.py，保持原目录并覆盖。
+4. Commit changes。
+5. Actions > Build iPhone IPA > Run workflow，选择 main。不要重跑旧提交。
+6. 成功后下载 Shiguang-iPhone-unsigned，解压得到 IPA。
+7. Sideloadly 选择 iPhone 和 IPA，输入专用 Apple ID，Start 完成签名安装。
+
+本包为源码，不是已签名 IPA。尚未进行 Xcode 编译和真机测试。
